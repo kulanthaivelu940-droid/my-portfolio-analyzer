@@ -1,7 +1,12 @@
-# My Portfolio Analyzer V5
-Investment Research & Monitoring prototype.
+# My Portfolio Analyzer V5.1
+Real-data research prototype.
 
-V5 adds Portfolio, Watchlist, Fundamental Research, Quarterly Results, Rolling Returns, Daily Monitor and the editable Goal Planner.
+- Stock prices/history/news and basic fundamentals via yfinance
+- Quarterly financial-data UI
+- Mutual-fund NAV history and rolling-return calculations
+- Year-end rolling-return summary plus monthly observations
+- Fundamental rules: EPS growth >=10% and D/E <1 for non-financials; D/E excluded for financials
+- Existing editable wealth goal planner
+- No Groww credentials, banking data, or order placement
 
-No fake market/fundamental/rolling-return figures are shown. Live data connectors are a separate phase.
-Do not put brokerage credentials or API secrets in GitHub.
+Before production use, verify figures against primary company/NSE filings and AMFI NAV history.
