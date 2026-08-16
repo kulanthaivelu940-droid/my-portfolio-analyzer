@@ -1,5 +1,5 @@
-type,name,symbol,units,avg_price,current_price,daily_pct
-Stock,Example Stock,EXAMPLE,10,1000,1080,2.1
-Stock,Example Midcap,MIDCAP,20,500,475,-3.4
-Mutual Fund,Parag Parikh Flexi Cap Fund,PPFCF,100,80,86,-1.2
-Mutual Fund,HDFC Mid Cap Fund,HDFCMID,120,150,158,-0.8
+type,name,symbol,sector_type,units,avg_price,current_price,daily_pct
+Stock,Example Stock,EXAMPLE,Non-financial,10,1000,1080,2.1
+Stock,Example Midcap,MIDCAP,Non-financial,20,500,475,-3.4
+Mutual Fund,Parag Parikh Flexi Cap Fund,PPFCF,Mutual Fund,100,80,86,-1.2
+Mutual Fund,HDFC Mid Cap Fund,HDFCMID,Mutual Fund,120,150,158,-0.8
