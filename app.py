@@ -4,221 +4,201 @@ import numpy as np
 import requests
 import yfinance as yf
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
-st.set_page_config(page_title="My Portfolio Analyzer V5.1", page_icon="📊", layout="wide")
-st.markdown("""<style>.block-container{padding:1rem;max-width:1250px}@media(max-width:700px){.block-container{padding:.7rem}h1{font-size:1.5rem!important}}</style>""", unsafe_allow_html=True)
+st.set_page_config(page_title="My Portfolio Analyzer V5.2", page_icon="📊", layout="wide")
+st.markdown("""<style>.block-container{padding:1rem;max-width:1250px}@media(max-width:700px){.block-container{padding:.7rem}h1{font-size:1.5rem!important}}</style>""",unsafe_allow_html=True)
 
 st.title("📊 My Portfolio Analyzer")
-st.caption("V5.1 • Real-data research layer • No trading/orders")
+st.caption("V5.2 • Automatic fund search + rolling returns + news research • No trading/orders")
 
-# ---------------- helpers ----------------
-@st.cache_data(ttl=900, show_spinner=False)
-def stock_data(ticker):
-    t = yf.Ticker(ticker)
-    info = t.info
-    hist = t.history(period="2y", auto_adjust=False)
-    q = t.quarterly_financials
-    a = t.financials
-    return info, hist, q, a
-
-@st.cache_data(ttl=900, show_spinner=False)
-def stock_history(ticker, period="10y"):
-    return yf.download(ticker, period=period, auto_adjust=False, progress=False)
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def mf_schemes():
-    # mfapi is used only as a scheme/NAV data convenience layer; source shown in UI.
-    url="https://api.mfapi.in/mf"
-    r=requests.get(url,timeout=20)
+@st.cache_data(ttl=3600,show_spinner=False)
+def mf_catalog():
+    r=requests.get("https://api.mfapi.in/mf",timeout=25)
     r.raise_for_status()
-    return r.json()
+    return pd.DataFrame(r.json())
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800,show_spinner=False)
 def mf_history(code):
-    r=requests.get(f"https://api.mfapi.in/mf/{code}",timeout=20)
+    r=requests.get(f"https://api.mfapi.in/mf/{code}",timeout=25)
     r.raise_for_status()
     j=r.json()
     df=pd.DataFrame(j.get("data",[]))
-    if df.empty: return df
+    if df.empty:return df
     df["date"]=pd.to_datetime(df["date"],dayfirst=True,errors="coerce")
     df["nav"]=pd.to_numeric(df["nav"],errors="coerce")
     return df.dropna(subset=["date","nav"]).sort_values("date")
 
-def rolling_returns(nav, years):
+def rolling_returns(nav,years):
     s=nav.set_index("date")["nav"].sort_index()
-    # monthly observations: last available NAV in each month
     m=s.resample("ME").last().dropna()
-    if len(m) <= years*12: return pd.DataFrame(columns=["Period ending","Rolling return"])
     rr=(m/m.shift(years*12)-1)*100
-    out=rr.dropna().reset_index()
-    out.columns=["Period ending","Rolling return"]
-    return out
+    return rr.dropna().rename("Rolling return").reset_index().rename(columns={"date":"Period ending"})
 
-def classify_company(info):
+def annual_last(rr):
+    return rr.assign(Year=rr["Period ending"].dt.year).groupby("Year",as_index=False)["Rolling return"].last()
+
+def search_funds(catalog,query):
+    q=" ".join(query.lower().split())
+    if not q:return pd.DataFrame()
+    # Prefer direct + growth variants.
+    name=catalog["schemeName"].astype(str)
+    score=name.str.lower().map(lambda s: sum(w in s for w in q.split()))
+    out=catalog.assign(_score=score)
+    mask=name.str.lower().str.contains("|".join(map(lambda x:__import__("re").escape(x),q.split())),regex=True,na=False)
+    out=out[mask].sort_values("_score",ascending=False)
+    direct=out[out.schemeName.str.contains("direct",case=False,na=False)]
+    growth=direct[direct.schemeName.str.contains("growth",case=False,na=False)]
+    return (growth if not growth.empty else direct if not direct.empty else out).head(30).drop(columns="_score")
+
+@st.cache_data(ttl=900,show_spinner=False)
+def stock_bundle(ticker):
+    t=yf.Ticker(ticker)
+    return t.info,t.history(period="1y",auto_adjust=False),t.quarterly_financials
+
+@st.cache_data(ttl=900,show_spinner=False)
+def stock_news(ticker):
+    t=yf.Ticker(ticker)
+    return getattr(t,"news",[]) or []
+
+def safe(x):
+    try:return float(x)
+    except:return np.nan
+
+def financial_company(info):
     text=" ".join(str(info.get(k,"")) for k in ["sector","industry","industryKey"]).lower()
-    financial_words=["bank","financial","insurance","credit","capital markets","asset management","mortgage","lending","nbfc"]
-    return any(w in text for w in financial_words)
+    words=["bank","financial","insurance","credit","capital markets","asset management","mortgage","lending","nbfc"]
+    return any(w in text for w in words)
 
-def safe_num(x):
-    try:
-        return float(x)
-    except:
-        return np.nan
-
-# ---------------- sidebar ----------------
 with st.sidebar:
-    st.header("🔎 Research input")
-    stock_ticker=st.text_input("Stock ticker",placeholder="e.g. TATACONSUM.NS")
-    mf_code=st.text_input("AMFI/MFAPI scheme code",placeholder="e.g. 122639")
-    alert_pct=st.slider("Daily movement alert (%)",1.0,10.0,3.0,0.5)
-    st.caption("Stock data uses Yahoo Finance via yfinance. Mutual-fund NAV history uses MFAPI for this prototype; AMFI is the reference source for official NAV history.")
+    st.header("🔎 Research")
+    ticker=st.text_input("Stock ticker",placeholder="TATACONSUM.NS")
+    fund_search=st.text_input("Mutual fund name",placeholder="Parag Parikh Flexi Cap")
+    alert=st.slider("Price movement alert (%)",1.0,10.0,3.0,.5)
+    st.caption("No Groww credentials are requested. V5.2 is research-only.")
 
 tabs=st.tabs(["📌 Portfolio","👀 Watchlist","🔍 Fundamental Check","📑 Quarterly Results","📈 Rolling Returns","📰 News & Monitor","🎯 Goal"])
 
-# ---------------- portfolio ----------------
 with tabs[0]:
     st.subheader("📌 Portfolio")
-    st.write("V5.1 can analyze an uploaded portfolio now; Groww read-only synchronization remains a separate security-controlled phase.")
-    up=st.file_uploader("Upload CSV",type=["csv"],key="portfolio")
-    if up:
-        p=pd.read_csv(up)
-        st.dataframe(p,use_container_width=True,hide_index=True)
-    else:
-        st.info("Upload your holdings CSV to analyze them here. No Groww credentials are requested.")
+    st.info("Upload a holdings CSV for analysis. Groww read-only synchronization will be added only after the research modules are stable.")
+    up=st.file_uploader("Portfolio CSV",type=["csv"],key="p")
+    if up: st.dataframe(pd.read_csv(up),use_container_width=True,hide_index=True)
 
-# ---------------- watchlist ----------------
 with tabs[1]:
     st.subheader("👀 Watchlist")
-    if "watchlist" not in st.session_state: st.session_state.watchlist=[]
+    if "watch" not in st.session_state:st.session_state.watch=[]
     a,b,c=st.columns(3)
-    with a: wn=st.text_input("Name",key="wn")
-    with b: ws=st.text_input("Symbol / ticker",key="ws")
-    with c: wt=st.selectbox("Type",["Stock","Mutual Fund"],key="wt")
+    with a:n=st.text_input("Name",key="n")
+    with b:s=st.text_input("Symbol",key="s")
+    with c:k=st.selectbox("Type",["Stock","Mutual Fund"],key="k")
     if st.button("➕ Add",key="add"):
-        if wn.strip() and ws.strip():
-            st.session_state.watchlist.append({"Name":wn.strip(),"Symbol":ws.strip().upper(),"Type":wt})
-    if st.session_state.watchlist:
-        st.dataframe(pd.DataFrame(st.session_state.watchlist),use_container_width=True,hide_index=True)
-        st.success("Every item added here is marked for daily monitoring.")
-    else: st.info("Add a stock or mutual fund. It will be included in the monitoring list.")
+        if n and s:st.session_state.watch.append({"Name":n,"Symbol":s.upper(),"Type":k})
+    if st.session_state.watch:st.dataframe(pd.DataFrame(st.session_state.watch),use_container_width=True,hide_index=True)
+    else:st.info("No watchlist items yet.")
 
-# ---------------- fundamental ----------------
 with tabs[2]:
     st.subheader("🔍 Fundamental Check")
-    if stock_ticker.strip():
+    if ticker.strip():
         try:
-            info,hist,q,a=stock_data(stock_ticker.strip())
-            financial=classify_company(info)
-            st.write(f"**{info.get('longName',stock_ticker)}** • {info.get('sector','Unknown')} • {'Financial' if financial else 'Non-financial'}")
-            cols=st.columns(4)
-            cols[0].metric("Market cap", f"₹{safe_num(info.get('marketCap'))/1e7:,.0f} Cr" if pd.notna(safe_num(info.get('marketCap'))) else "N/A")
-            cols[1].metric("P/E", f"{safe_num(info.get('trailingPE')):.2f}" if pd.notna(safe_num(info.get('trailingPE'))) else "N/A")
-            cols[2].metric("ROE", f"{safe_num(info.get('returnOnEquity'))*100:.1f}%" if pd.notna(safe_num(info.get('returnOnEquity'))) else "N/A")
-            cols[3].metric("Debt/Equity", f"{safe_num(info.get('debtToEquity')):.2f}" if pd.notna(safe_num(info.get('debtToEquity'))) else "N/A")
-            st.markdown("### Our mandatory rules")
-            roe=safe_num(info.get("returnOnEquity")); de=safe_num(info.get("debtToEquity"))
-            eps_growth=safe_num(info.get("earningsGrowth"))
-            rows=[]
-            rows.append(["EPS growth",eps_growth*100 if pd.notna(eps_growth) else np.nan, "PASS" if pd.notna(eps_growth) and eps_growth>=0.10 else ("FAIL" if pd.notna(eps_growth) else "DATA NEEDED")])
-            rows.append(["Debt/Equity",de,"N/A — financial sector" if financial else ("PASS" if pd.notna(de) and de<1 else ("FAIL" if pd.notna(de) else "DATA NEEDED"))])
-            rows.append(["ROE",roe*100 if pd.notna(roe) else np.nan,"REFERENCE"])
-            fdf=pd.DataFrame(rows,columns=["Metric","Value","Rule"])
-            st.dataframe(fdf,use_container_width=True,hide_index=True)
-            if financial:
-                st.info("Financial company detected: D/E is not used as a rejection rule. Use capital adequacy, asset quality, NIM, ROA/ROE, credit growth, provisions and cost-to-income in the financial-sector module.")
-            else:
-                st.info("Non-financial company: D/E < 1 and double-digit EPS/earnings growth are mandatory rules. Missing data means the app will not label it BUY.")
-            st.markdown("### Additional quality / valuation fields")
-            fields=["returnOnAssets","profitMargins","operatingMargins","freeCashflow","priceToBook","pegRatio","forwardPE","revenueGrowth"]
-            vals={f:info.get(f) for f in fields}
-            st.json(vals)
-        except Exception as e:
-            st.error(f"Could not fetch stock data: {e}")
-    else:
-        st.info("Enter an NSE ticker such as TATACONSUM.NS in the sidebar.")
+            info,hist,q=stock_bundle(ticker.strip())
+            fin=financial_company(info)
+            st.write(f"**{info.get('longName',ticker)}** • {info.get('sector','Unknown')} • {'Financial' if fin else 'Non-financial'}")
+            a,b,c,d=st.columns(4)
+            a.metric("P/E",f"{safe(info.get('trailingPE')):.2f}" if pd.notna(safe(info.get('trailingPE'))) else "N/A")
+            b.metric("ROE",f"{safe(info.get('returnOnEquity'))*100:.1f}%" if pd.notna(safe(info.get('returnOnEquity'))) else "N/A")
+            c.metric("D/E",f"{safe(info.get('debtToEquity')):.2f}" if pd.notna(safe(info.get('debtToEquity'))) else "N/A")
+            d.metric("Earnings growth",f"{safe(info.get('earningsGrowth'))*100:.1f}%" if pd.notna(safe(info.get('earningsGrowth'))) else "N/A")
+            eg=safe(info.get("earningsGrowth"));de=safe(info.get("debtToEquity"))
+            rows=[["EPS/earnings growth",eg*100 if pd.notna(eg) else np.nan,"PASS" if pd.notna(eg) and eg>=.10 else ("FAIL" if pd.notna(eg) else "DATA NEEDED")]]
+            rows.append(["Debt/Equity",de,"N/A — financial company" if fin else ("PASS" if pd.notna(de) and de<1 else ("FAIL" if pd.notna(de) else "DATA NEEDED"))])
+            st.dataframe(pd.DataFrame(rows,columns=["Metric","Value","Rule"]),use_container_width=True,hide_index=True)
+            st.info("Financial companies: D/E is not a rejection rule. Non-financial companies: D/E < 1 is mandatory. Missing key data never becomes an automatic BUY.")
+        except Exception as e:st.error(f"Data error: {e}")
+    else:st.info("Enter a stock ticker in the sidebar.")
 
-# ---------------- quarterly ----------------
 with tabs[3]:
     st.subheader("📑 Quarterly Results")
-    if stock_ticker.strip():
+    if ticker.strip():
         try:
-            info,hist,q,a=stock_data(stock_ticker.strip())
-            if q is None or q.empty:
-                st.warning("Quarterly financial data was not returned for this ticker.")
+            info,hist,q=stock_bundle(ticker.strip())
+            if q is None or q.empty:st.warning("Quarterly data was not returned for this ticker.")
             else:
-                preferred=["Total Revenue","Operating Income","Operating Expense","Net Income","Basic EPS","Diluted EPS"]
-                rows=[]
-                for idx in preferred:
-                    if idx in q.index:
-                        row=q.loc[idx]
-                        rows.append(pd.Series(row,name=idx))
-                qdf=pd.DataFrame(rows)
-                st.dataframe(qdf,use_container_width=True)
-                st.caption("Quarterly figures are sourced from the market-data provider; always cross-check against the company's/NSE's official filing before investment decisions.")
-        except Exception as e:
-            st.error(f"Could not fetch quarterly results: {e}")
-    else:
-        st.info("Enter a stock ticker to load quarterly data.")
+                st.dataframe(q,use_container_width=True)
+                st.caption("Cross-check important figures with the company's/NSE's official filings.")
+        except Exception as e:st.error(f"Quarterly data error: {e}")
+    else:st.info("Enter a stock ticker.")
 
-# ---------------- rolling ----------------
 with tabs[4]:
-    st.subheader("📈 Rolling Return Analysis")
-    st.write("Monthly rolling observations are used underneath, with every-year summaries available from the same series.")
-    if mf_code.strip():
+    st.subheader("📈 Rolling Returns — automatic fund search")
+    if not fund_search:
+        st.info("Type a fund name in the sidebar. Example: Parag Parikh Flexi Cap Fund")
+    else:
         try:
-            nav=mf_history(mf_code.strip())
-            if nav.empty:
-                st.warning("No NAV history found for this scheme code.")
+            cat=mf_catalog()
+            results=search_funds(cat,fund_search)
+            if results.empty:
+                st.warning("No matching schemes found. Try a shorter fund name.")
             else:
-                period=st.selectbox("Rolling period (years)",[1,3,5,7,10],index=2,key="rollperiod")
-                rr=rolling_returns(nav,period)
-                if rr.empty:
-                    st.warning("Not enough history for this rolling period.")
+                labels=[f"{r.schemeName}  |  {r.schemeCode}" for _,r in results.iterrows()]
+                choice=st.selectbox("Select scheme",labels)
+                code=choice.split("|")[-1].strip()
+                period=st.selectbox("Rolling period",[1,3,5,7,10],index=2,format_func=lambda x:f"{x}Y")
+                nav=mf_history(code)
+                if nav.empty:st.warning("NAV history unavailable for this scheme.")
                 else:
-                    yr=rr.assign(Year=rr["Period ending"].dt.year).groupby("Year",as_index=False)["Rolling return"].last()
-                    st.markdown("**Every-year rolling return**")
-                    st.dataframe(yr.style.format({"Rolling return":"{:.2f}%"}),use_container_width=True,hide_index=True)
-                    st.markdown("**Monthly observations**")
-                    st.line_chart(rr.set_index("Period ending")["Rolling return"])
-                    x=rr["Rolling return"]
-                    s1,s2,s3,s4=st.columns(4)
-                    s1.metric("Average",f"{x.mean():.2f}%")
-                    s2.metric("Minimum",f"{x.min():.2f}%")
-                    s3.metric("Maximum",f"{x.max():.2f}%")
-                    s4.metric(">12% observations",f"{(x>12).mean()*100:.1f}%")
-                    st.dataframe(rr.style.format({"Rolling return":"{:.2f}%"}),use_container_width=True,hide_index=True)
+                    rr=rolling_returns(nav,period)
+                    if rr.empty:st.warning(f"Not enough NAV history for {period}Y rolling return.")
+                    else:
+                        st.markdown("### Every-year rolling return")
+                        yr=annual_last(rr)
+                        st.dataframe(yr.style.format({"Rolling return":"{:.2f}%"}),use_container_width=True,hide_index=True)
+                        st.markdown("### Monthly rolling observations")
+                        st.line_chart(rr.set_index("Period ending")["Rolling return"])
+                        x=rr["Rolling return"]
+                        a,b,c,d=st.columns(4)
+                        a.metric("Average",f"{x.mean():.2f}%")
+                        b.metric("Minimum",f"{x.min():.2f}%")
+                        c.metric("Maximum",f"{x.max():.2f}%")
+                        d.metric(">12%",f"{(x>12).mean()*100:.1f}%")
+                        with st.expander("View all monthly observations"):
+                            st.dataframe(rr.style.format({"Rolling return":"{:.2f}%"}),use_container_width=True,hide_index=True)
+                        st.caption("NAV data is retrieved through MFAPI. Validate important fund figures against AMFI/fund-house records.")
         except Exception as e:
-            st.error(f"Could not fetch NAV history: {e}")
-    else:
-        st.info("Enter an AMFI/MFAPI scheme code to calculate real rolling returns. AMFI provides NAV history and daily NAV information. See source links below.")
-        st.markdown("AMFI NAV History: https://www.amfiindia.com/sif/latest-nav/nav-history")
+            st.error(f"Fund search/data error: {e}")
 
-# ---------------- news / monitor ----------------
 with tabs[5]:
-    st.subheader("📰 News & Daily Monitor")
-    if stock_ticker.strip():
-        try:
-            info,hist,q,a=stock_data(stock_ticker.strip())
-            if hist is not None and len(hist)>=2:
-                last=float(hist["Close"].iloc[-1]); prev=float(hist["Close"].iloc[-2]); move=(last/prev-1)*100
-                st.metric("Latest close",f"₹{last:,.2f}",f"{move:+.2f}%")
-                if abs(move)>=alert_pct: st.warning(f"Movement alert: {move:+.2f}%")
-                else: st.success("No movement alert at the selected threshold.")
-            t=yf.Ticker(stock_ticker.strip())
-            news=getattr(t,"news",[]) or []
-            if news:
-                rows=[]
-                for n in news[:10]:
-                    rows.append({"Title":n.get("title",""),"Publisher":n.get("publisher",""),"Link":n.get("link","")})
-                st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-            else: st.info("No news feed returned by the provider.")
-        except Exception as e:
-            st.error(f"Monitor error: {e}")
+    st.subheader("📰 News & Monitor")
+    if not ticker.strip():
+        st.info("Enter a stock ticker in the sidebar.")
     else:
-        st.info("Enter a stock ticker for price/news monitoring.")
-    st.markdown("**Important:** news is evidence for investigation, not an automatic BUY/SELL decision.")
+        try:
+            info,hist,q=stock_bundle(ticker.strip())
+            if hist is not None and len(hist)>=2:
+                close=hist["Close"].dropna()
+                move=(float(close.iloc[-1])/float(close.iloc[-2])-1)*100
+                a,b=st.columns(2)
+                a.metric("Latest close",f"₹{float(close.iloc[-1]):,.2f}")
+                b.metric("Daily movement",f"{move:+.2f}%")
+                if abs(move)>=alert:st.warning(f"🔔 Movement alert: {move:+.2f}%")
+                else:st.success("No movement alert at your selected threshold.")
+            news=stock_news(ticker.strip())
+            if not news:
+                st.warning("The market-data provider returned no news for this ticker.")
+                st.markdown("### Search latest news manually")
+                st.link_button("Google News search",f"https://news.google.com/search?q={quote_plus(ticker.strip())}")
+            else:
+                st.markdown("### Recent provider news")
+                for n in news[:10]:
+                    title=n.get("title","News")
+                    publisher=n.get("publisher","")
+                    link=n.get("link","")
+                    if link:st.markdown(f"**{title}** — {publisher}  \n[Open article]({link})")
+                    else:st.write(f"**{title}** — {publisher}")
+            st.info("News is evidence for investigation, not proof of causation. The app will label causes as confirmed or possible rather than inventing reasons.")
+        except Exception as e:
+            st.error(f"News/monitor error: {e}")
 
-# ---------------- goal ----------------
 with tabs[6]:
     st.subheader("🎯 Goal Planner")
     target=st.number_input("Target corpus (₹)",100000.,1000000000.,10000000.,100000.,format="%.0f")
@@ -229,13 +209,12 @@ with tabs[6]:
     bonus=st.number_input("Annual bonus (₹)",0.,10000000.,100000.,10000.,format="%.0f")
     refund=st.number_input("Annual tax refund (₹)",0.,10000000.,50000.,5000.,format="%.0f")
     current=st.number_input("Current corpus (₹)",0.,1000000000.,0.,10000.,format="%.0f")
-    r=ret/100/12; corpus=current; s=sip; rows=[]
+    r=ret/100/12;corpus=current;s=sip;rows=[]
     for y in range(1,int(years)+1):
-        for _ in range(12): corpus=corpus*(1+r)+s
-        corpus+=bonus+refund; rows.append([y,s,corpus]); s*=1+step/100
+        for _ in range(12):corpus=corpus*(1+r)+s
+        corpus+=bonus+refund;rows.append([y,s,corpus]);s*=1+step/100
     st.metric("Projected corpus",f"₹{corpus:,.0f}")
     st.success("🟢 ON TRACK" if corpus>=target else f"🔴 OFF TRACK — shortfall ₹{target-corpus:,.0f}")
-    st.dataframe(pd.DataFrame(rows,columns=["Year","Starting SIP","Projected corpus"]).style.format({"Starting SIP":"₹{:,.0f}","Projected corpus":"₹{:,.0f}"}),use_container_width=True,hide_index=True)
 
 st.divider()
-st.caption("V5.1 • Real-data research prototype • No brokerage credentials, banking data, or order placement.")
+st.caption("V5.2 • Research-only • No Groww credentials, banking information or order placement.")

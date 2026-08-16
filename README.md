@@ -1,12 +1,10 @@
-# My Portfolio Analyzer V5.1
-Real-data research prototype.
-
-- Stock prices/history/news and basic fundamentals via yfinance
-- Quarterly financial-data UI
-- Mutual-fund NAV history and rolling-return calculations
-- Year-end rolling-return summary plus monthly observations
-- Fundamental rules: EPS growth >=10% and D/E <1 for non-financials; D/E excluded for financials
-- Existing editable wealth goal planner
-- No Groww credentials, banking data, or order placement
-
-Before production use, verify figures against primary company/NSE filings and AMFI NAV history.
+# My Portfolio Analyzer V5.2
+V5.2 improves the data layer:
+- Automatic mutual-fund name search instead of requiring a scheme code
+- Direct/Growth preference
+- 1Y/3Y/5Y/7Y/10Y monthly rolling returns
+- Every-year rolling-return summary
+- Stock price movement + provider news + Google News fallback
+- Fundamental rule handling for financial vs non-financial companies
+- Quarterly results
+- No brokerage credentials or order placement
